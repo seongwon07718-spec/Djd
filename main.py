@@ -1,5 +1,5 @@
 import os
-import discor
+import discord
 import random
 import time
 from discord.ext import commands
