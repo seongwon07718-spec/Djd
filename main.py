@@ -1,12 +1,12 @@
 import os
 import discord
 from discord import app_commands, ui, Embed, ButtonStyle
-from discord.ext import tasks
 from dotenv import load_dotenv
 import asyncio
 from typing import Optional
 
 load_dotenv()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 GUILD_ID = os.getenv("GUILD_ID")
@@ -15,11 +15,16 @@ if not TOKEN or not CLIENT_ID or not GUILD_ID:
     print("ENV 설정을 확인하세요: DISCORD_TOKEN, CLIENT_ID, GUILD_ID")
     exit(1)
 
+try:
+    GUILD_ID_INT = int(GUILD_ID)
+except ValueError:
+    print("GUILD_ID는 숫자여야 합니다.")
+    exit(1)
+
 intents = discord.Intents.default()
 intents.message_content = True
-bot = discord.Bot(intents=intents, debug_guilds=[int(GUILD_ID)])
+bot = discord.Bot(intents=intents, debug_guilds=[GUILD_ID_INT])
 
-# 경매 상태를 저장할 구조
 class AuctionState:
     def __init__(self, channel: discord.TextChannel, message: discord.Message,
                  item: str, start_price: int, duration_sec: int, owner: discord.Member):
@@ -87,7 +92,7 @@ async def on_ready():
 @app_commands.describe(아이템="원하는 템 이름/설명",
                        시작금액="시작 금액 (정수)",
                        진행초="몇 초 동안 진행할지")
-@app_commands.guilds(discord.Object(id=int(GUILD_ID)))
+@app_commands.guilds(discord.Object(id=GUILD_ID_INT))
 async def auction(interaction: discord.Interaction,
                   아이템: str,
                   시작금액: int,
@@ -99,10 +104,9 @@ async def auction(interaction: discord.Interaction,
             ephemeral=True)
         return
 
-    embed = None  # placeholder
     await interaction.response.defer()
-    msg = await interaction.followup.send(embed=AuctionState.make_embed(
-        AuctionState.__new__(AuctionState)), view=AuctionState.buttons(AuctionState.__new__(AuctionState)))
+    dummy_state = AuctionState.__new__(AuctionState)  # 임시 dummy
+    msg = await interaction.followup.send(embed=dummy_state.make_embed(), view=dummy_state.buttons())
 
     state = AuctionState(channel, msg, 아이템, 시작금액, 진행초, interaction.user)
     auctions[channel.id] = state
