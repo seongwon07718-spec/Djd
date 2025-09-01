@@ -1,144 +1,200 @@
 import os
 import discord
-import random
-import time
-from discord.ext import commands
+from discord import app_commands, ui, Embed, ButtonStyle
+from discord.ext import tasks
+from dotenv import load_dotenv
+import asyncio
+from typing import Optional
 
+load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
-GUILD_ID = 1406418646237974608  # 서버 ID
+CLIENT_ID = os.getenv("1404030027703521330")
+GUILD_ID = os.getenv("1406418646237974608")
+
+if not TOKEN or not CLIENT_ID or not GUILD_ID:
+    print("ENV 설정을 확인하세요: DISCORD_TOKEN, CLIENT_ID, GUILD_ID")
+    exit(1)
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
-intents.members = True
+bot = discord.Bot(intents=intents, debug_guilds=[int(GUILD_ID)])
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-user_points = {}
-last_play_time = {}
-COOLDOWN = 300  # 30분 쿨타임 (초 단위)
+# 경매 상태를 저장할 구조
+class AuctionState:
+    def __init__(self, channel: discord.TextChannel, message: discord.Message,
+                 item: str, start_price: int, duration_sec: int, owner: discord.Member):
+        self.channel = channel
+        self.message = message
+        self.item = item
+        self.start_price = start_price
+        self.highest_bid = start_price
+        self.highest_bidder: Optional[discord.Member] = None
+        self.ends_at = discord.utils.utcnow().timestamp() + duration_sec
+        self.owner = owner
+        self.lock = asyncio.Lock()
+        self.task = bot.loop.create_task(self._run_countdown())
 
+    def money_fmt(self, n: int) -> str:
+        return f"{n:,}₩"
 
-class MinesButton(discord.ui.Button):
-    def __init__(self, x, y):
-        super().__init__(label="\u200b", style=discord.ButtonStyle.secondary, row=y)
-        self.x = x
-        self.y = y
+    def make_embed(self) -> Embed:
+        remaining = max(0, int(self.ends_at - discord.utils.utcnow().timestamp()))
+        ends_at_ts = int(self.ends_at)
+        highest_line = (f"**{self.money_fmt(self.highest_bid)}** (<@{self.highest_bidder.id}>)"
+                        if self.highest_bidder else
+                        f"아직 없음 (시작가: **{self.money_fmt(self.start_price)}**)")
+        embed = Embed(title="❗️경매 진행 중❗️",
+                      description=f"**아이템:** {self.item}",
+                      color=0x00AE86)
+        embed.add_field(name="최고 입찰가", value=highest_line, inline=True)
+        embed.add_field(name="남은 시간",
+                        value=f"{remaining}초 (<t:{ends_at_ts}:R>)",
+                        inline=True)
+        embed.set_footer(text="버튼을 눌러 입찰하고, 모달에 금액을 입력하세요.")
+        return embed
 
-    async def callback(self, interaction: discord.Interaction):
-        # 본인만 클릭 가능
-        if interaction.user != self.view.player:
-            await interaction.response.send_message("**이 게임은 당신 것이 아닙니다**", ephemeral=True)
-            return
+    def buttons(self, disabled: bool = False) -> ui.View:
+        view = ui.View()
+        view.add_item(ui.Button(label="💸 입찰하기", custom_id="bid_open",
+                                style=ButtonStyle.primary, disabled=disabled))
+        view.add_item(ui.Button(label="⏹️ 조기 종료", custom_id="auction_end",
+                                style=ButtonStyle.secondary, disabled=disabled))
+        return view
 
-        cell = self.view.board[self.y][self.x]
+    async def _run_countdown(self):
+        try:
+            while True:
+                await asyncio.sleep(5)
+                remaining = self.ends_at - discord.utils.utcnow().timestamp()
+                if remaining <= 0:
+                    await end_auction(self, "시간 종료")
+                    break
+                try:
+                    await self.message.edit(embed=self.make_embed(),
+                                             view=self.buttons(False))
+                except Exception as e:
+                    print("주기 업데이트 실패(무시):", e)
+        except asyncio.CancelledError:
+            pass
 
-        # 보석 클릭
-        if cell == "💎":
-            self.label = "💎"
-            self.style = discord.ButtonStyle.success
-            self.disabled = True
-            self.view.found_gems += 1
-
-            # 모든 보석 찾음 → 게임 종료
-            if self.view.found_gems == self.view.gems_to_find:
-                user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 1
-                for item in self.view.children:
-                    item.disabled = True
-                await interaction.response.send_message(
-                    f"🎉 축하합니다! 보석 {self.view.gems_to_find}개 모두 찾았습니다! "
-                    f"(+1점, 총 {user_points[interaction.user.id]}점)",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    f"💎 보석 발견! ({self.view.found_gems}/{self.view.gems_to_find})",
-                    ephemeral=True
-                )
-
-            await interaction.message.edit(view=self.view)
-
-        # 폭탄 클릭
-        else:
-            self.label = "💣"
-            self.style = discord.ButtonStyle.danger
-            self.disabled = True
-
-            # 전체 보드 공개
-            for item in self.view.children:
-                if isinstance(item, MinesButton) and not item.disabled:
-                    if self.view.board[item.y][item.x] == "💣":
-                        item.label = "💣"
-                        item.style = discord.ButtonStyle.secondary
-                    elif self.view.board[item.y][item.x] == "💎":
-                        item.label = "💎"
-                        item.style = discord.ButtonStyle.secondary
-                    item.disabled = True
-
-            await interaction.response.send_message(
-                f"💥 아쉽습니다! 폭탄을 뽑아 탈락했습니다.",
-                ephemeral=True
-            )
-            await interaction.message.edit(view=self.view)
-
-
-class MinesGame(discord.ui.View):
-    def __init__(self, player):
-        super().__init__(timeout=None)  # 무제한 유지
-        self.player = player
-        self.gems_to_find = 3
-        self.total_gems = 7
-        self.found_gems = 0
-
-        # 기본 보드 생성
-        self.board = [["💣" for _ in range(5)] for _ in range(5)]
-        positions = random.sample([(x, y) for y in range(5) for x in range(5)], self.total_gems)
-        for x, y in positions:
-            self.board[y][x] = "💎"
-
-        # 버튼 생성
-        for y in range(5):
-            for x in range(5):
-                self.add_item(MinesButton(x, y))
-
-
-@bot.tree.command(name="미니게임", description="5x5 보석 맞추기 게임 (30분 쿨타임)", guild=discord.Object(id=GUILD_ID))
-async def minigame(interaction: discord.Interaction):
-    now = time.time()
-    last_time = last_play_time.get(interaction.user.id, 0)
-
-    if now - last_time < COOLDOWN:
-        remaining = int(COOLDOWN - (now - last_time))
-        minutes = remaining // 60
-        seconds = remaining % 60
-        await interaction.response.send_message(
-            f"**{minutes}분 {seconds}초 후에 다시 시도하세요**",
-            ephemeral=True
-        )
-        return
-
-    last_play_time[interaction.user.id] = now
-    view = MinesGame(interaction.user)
-
-    await interaction.response.send_message(
-        f"**{interaction.user.mention} 님이 미니게임을 시작했습니다**"
-    )
-    await interaction.channel.send(
-        f"**보석 {view.gems_to_find}개를 찾으면 포인트 하나 드립니다**\n"
-        f"**총 {view.total_gems}개의 보석이 숨겨져 있습니다**",
-        view=view
-    )
-
-
-@bot.tree.command(name="포인트", description="내 포인트 확인", guild=discord.Object(id=GUILD_ID))
-async def check_points(interaction: discord.Interaction):
-    points = user_points.get(interaction.user.id, 0)
-    await interaction.response.send_message(f"**💰 현재 포인트: {points}점**", ephemeral=True)
-
+auctions: dict[int, AuctionState] = {}
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    print(f"✅ 로그인됨: {bot.user} | 명령어 동기화 완료!")
+    print(f"✅ 로그인: {bot.user} ({bot.user.id})")
 
+@bot.command(name="경매", description="경매를 시작합니다.")
+@app_commands.describe(아이템="원하는 템 이름/설명",
+                       시작금액="시작 금액 (정수)",
+                       진행초="몇 초 동안 진행할지")
+@app_commands.guilds(discord.Object(id=int(GUILD_ID)))
+async def auction(interaction: discord.Interaction,
+                  아이템: str,
+                  시작금액: int,
+                  진행초: int):
+    channel = interaction.channel
+    if channel.id in auctions:
+        await interaction.response.send_message(
+            "❗️이 채널에서는 이미 경매가 진행 중입니다. 종료 후 다시 시도해주세요❗️",
+            ephemeral=True)
+        return
+
+    embed = None  # placeholder
+    await interaction.response.defer()
+    msg = await interaction.followup.send(embed=AuctionState.make_embed(
+        AuctionState.__new__(AuctionState)), view=AuctionState.buttons(AuctionState.__new__(AuctionState)))
+
+    state = AuctionState(channel, msg, 아이템, 시작금액, 진행초, interaction.user)
+    auctions[channel.id] = state
+    await msg.edit(embed=state.make_embed(), view=state.buttons(False))
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type != discord.InteractionType.component:
+        return
+
+    custom_id = interaction.data.get("custom_id")
+    channel_id = interaction.channel.id
+    state = auctions.get(channel_id)
+
+    if custom_id == "bid_open":
+        if not state:
+            await interaction.response.send_message("이미 종료된 경매입니다.", ephemeral=True)
+            return
+        modal = ui.Modal(title="입찰하기")
+        modal.add_item(ui.TextInput(label="입찰 금액(정수)",
+                                    placeholder=f"현재가 이상을 입력 (현재: {state.money_fmt(state.highest_bid)})",
+                                    custom_id="bid_value", required=True))
+        async def modal_callback(mod_interaction: discord.Interaction):
+            await modal_callback_body(mod_interaction, state)
+        modal.callback = modal_callback
+        await interaction.response.send_modal(modal)
+
+    elif custom_id == "auction_end":
+        if not state:
+            await interaction.response.send_message("이미 종료된 경매입니다.", ephemeral=True)
+            return
+        is_owner = interaction.user.id == state.owner.id
+        is_mod = interaction.user.guild_permissions.manage_messages
+        if not (is_owner or is_mod):
+            await interaction.response.send_message(
+                "❗️개설자 또는 관리자만 조기 종료할 수 있어요❗️", ephemeral=True)
+            return
+        state.task.cancel()
+        await interaction.response.send_message("경매를 종료했어요.", ephemeral=True)
+        await end_auction(state, "조기 종료")
+
+async def modal_callback_body(inter: discord.Interaction, state: AuctionState):
+    if not state:
+        await inter.response.send_message("이미 종료된 경매입니다.", ephemeral=True)
+        return
+
+    async with state.lock:
+        now_ts = discord.utils.utcnow().timestamp()
+        if now_ts >= state.ends_at:
+            state.task.cancel()
+            await end_auction(state, "시간 종료")
+            await inter.response.send_message("이미 시간이 종료되었습니다.", ephemeral=True)
+            return
+
+        raw = inter.text_values.get("bid_value", "").strip()
+        if not raw.isdigit():
+            await inter.response.send_message("정수를 입력해주세요.", ephemeral=True)
+            return
+
+        bid = int(raw)
+        if bid <= state.highest_bid or bid < state.start_price:
+            await inter.response.send_message(
+                f"현재가(**{state.money_fmt(state.highest_bid)}**)보다 높은 금액을 입력하세요.", ephemeral=True)
+            return
+
+        # 업데이트
+        state.highest_bid = bid
+        state.highest_bidder = inter.user
+
+        try:
+            await state.message.edit(embed=state.make_embed(), view=state.buttons(False))
+        except Exception as e:
+            print("즉시 업데이트 실패(무시):", e)
+
+        await inter.response.send_message(
+            f"입찰 성공! 현재 최고가는 **{state.money_fmt(bid)}**입니다.", ephemeral=True)
+
+async def end_auction(state: AuctionState, reason: str):
+    winner_text = (f"🏆 우승자: <@{state.highest_bidder.id}> — **{state.money_fmt(state.highest_bid)}**"
+                   if state.highest_bidder else "입찰자가 없어 낙찰 실패")
+    embed = Embed(title="🔔 경매 종료", description=f"**아이템:** {state.item}", color=0xDD2E44)
+    embed.add_field(name="결과", value=winner_text, inline=False)
+    embed.add_field(name="종료 사유", value=reason, inline=False)
+    embed.set_footer(text=None)
+    embed.timestamp = discord.utils.utcnow()
+
+    try:
+        await state.message.edit(embed=embed, view=state.buttons(True))
+        await state.channel.send(winner_text)
+    except Exception as e:
+        print("종료 업데이트 실패(무시):", e)
+    finally:
+        auctions.pop(state.channel.id, None)
 
 bot.run(TOKEN)
