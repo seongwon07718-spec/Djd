@@ -2,7 +2,7 @@
 import os
 import re
 import asyncio
-from typing import Optional
+from typing import Optional, Union
 
 import discord
 from discord.ext import commands
@@ -33,7 +33,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 class AuctionState:
     def __init__(
         self,
-        channel: discord.abc.MessageableChannel,
+        channel: Union[discord.TextChannel, discord.Thread, discord.DMChannel],
         message: discord.Message,
         item: str,
         start_price: int,
@@ -63,9 +63,9 @@ class AuctionState:
             f"아직 없음 (시작가: **{self.money_fmt(self.start_price)}**)"
         )
         embed = Embed(
-            title="❗️경매 진행 중❗️",
+            title="⚡️경매 진행 중⚡️",
             description=f"**아이템:** {self.item}",
-            color=0x00AE86
+            color=0x000000
         )
         embed.add_field(name="최고 입찰가", value=highest_line, inline=True)
         embed.add_field(
@@ -78,9 +78,9 @@ class AuctionState:
 
     def buttons(self, disabled: bool = False) -> ui.View:
         view = ui.View(timeout=None)
-        view.add_item(ui.Button(label="💸 입찰하기", custom_id="bid_open",
+        view.add_item(ui.Button(label="💰입찰하기", custom_id="bid_open",
                                 style=ButtonStyle.primary, disabled=disabled))
-        view.add_item(ui.Button(label="⏹️ 조기 종료", custom_id="auction_end",
+        view.add_item(ui.Button(label="✖️조기 종료", custom_id="auction_end",
                                 style=ButtonStyle.secondary, disabled=disabled))
         return view
 
@@ -130,7 +130,7 @@ class BidModal(ui.Modal, title="입찰하기"):
                 return
 
             raw = (self.bid_value.value or "").strip()
-            digits = re.sub(r"\D", "", raw)  # 숫자만 추출: 2,800원 / 2800₩ 도 허용
+            digits = re.sub(r"\D", "", raw)  # 숫자만 추출
             if not digits:
                 await interaction.response.send_message("정수를 입력해주세요.", ephemeral=True)
                 return
