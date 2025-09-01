@@ -1,5 +1,6 @@
 import os
 import discord
+from discord.ext import commands
 from discord import app_commands, ui, Embed, ButtonStyle
 from dotenv import load_dotenv
 import asyncio
@@ -23,7 +24,7 @@ except ValueError:
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = discord.Bot(intents=intents, debug_guilds=[GUILD_ID_INT])
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 class AuctionState:
     def __init__(self, channel: discord.TextChannel, message: discord.Message,
@@ -87,12 +88,16 @@ auctions: dict[int, AuctionState] = {}
 @bot.event
 async def on_ready():
     print(f"✅ 로그인: {bot.user} ({bot.user.id})")
+    try:
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID_INT))
+        print(f"✅ 슬래시 커맨드 동기화 완료: {len(synced)}개")
+    except Exception as e:
+        print("슬래시 동기화 실패:", e)
 
-@bot.command(name="경매", description="경매를 시작합니다.")
+@bot.tree.command(name="경매", description="경매를 시작합니다.", guild=discord.Object(id=GUILD_ID_INT))
 @app_commands.describe(아이템="원하는 템 이름/설명",
                        시작금액="시작 금액 (정수)",
                        진행초="몇 초 동안 진행할지")
-@app_commands.guilds(discord.Object(id=GUILD_ID_INT))
 async def auction(interaction: discord.Interaction,
                   아이템: str,
                   시작금액: int,
@@ -106,7 +111,7 @@ async def auction(interaction: discord.Interaction,
 
     await interaction.response.defer()
     dummy_state = AuctionState.__new__(AuctionState)  # 임시 dummy
-    msg = await interaction.followup.send(embed=dummy_state.make_embed(), view=dummy_state.buttons())
+    msg = await interaction.followup.send(embed=Embed(title="경매 준비중..."))
 
     state = AuctionState(channel, msg, 아이템, 시작금액, 진행초, interaction.user)
     auctions[channel.id] = state
