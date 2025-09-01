@@ -1,4 +1,4 @@
-import o
+import os
 import discord
 from discord import app_commands, ui, Embed, ButtonStyle
 from discord.ext import tasks
