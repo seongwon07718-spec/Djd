@@ -7,9 +7,9 @@ import asyncio
 from typing import Optional
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-CLIENT_ID = os.getenv("1404030027703521330")
-GUILD_ID = os.getenv("1406418646237974608")
+TOKEN = os.getenv("DISCORD_TOKEN")
+CLIENT_ID = os.getenv("CLIENT_ID")
+GUILD_ID = os.getenv("GUILD_ID")
 
 if not TOKEN or not CLIENT_ID or not GUILD_ID:
     print("ENV 설정을 확인하세요: DISCORD_TOKEN, CLIENT_ID, GUILD_ID")
